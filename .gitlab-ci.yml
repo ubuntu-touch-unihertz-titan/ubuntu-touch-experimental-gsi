@@ -10,4 +10,49 @@ variables:
 image: ubuntu:20.04
 
 build:
+  rules:
+   - when: never
+
+flashable:
+  rules:
+   - when: never
+
+devel-flashable:
+  rules:
+   - when: never
+
+devel-flashable-focal:
+  rules:
+   - when: never
+
+build-android12-5.4:
   tags: [ubports]
+  extends: build
+  before_script:
+    - ln -sf deviceinfo-android12-5.4 deviceinfo
+  rules:
+   - if: $CI_PIPELINE_SOURCE == "push"
+
+build-android12-5.10:
+  tags: [ubports]
+  extends: build
+  before_script:
+    - ln -sf deviceinfo-android12-5.10 deviceinfo
+  rules:
+   - if: $CI_PIPELINE_SOURCE == "push"
+
+devel-flashable-android12-5.4:
+  extends: [devel-flashable]
+  needs: [build-android12-5.4]
+  before_script:
+    - ln -sf deviceinfo-android12-5.4 deviceinfo
+  rules:
+   - if: $CI_PIPELINE_SOURCE == "push"
+
+devel-flashable-android12-5.10:
+  extends: [devel-flashable]
+  needs: [build-android12-5.10]
+  before_script:
+    - ln -sf deviceinfo-android12-5.10 deviceinfo
+  rules:
+   - if: $CI_PIPELINE_SOURCE == "push"

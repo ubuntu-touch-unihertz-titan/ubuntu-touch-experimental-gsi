@@ -1,9 +1,7 @@
 include:
-  - https://gitlab.com/ubports/porting/community-ports/halium-generic-adaptation-build-tools/-/raw/halium-12/gsi-port-ci.yml
+  - https://gitlab.com/ubports/porting/community-ports/halium-generic-adaptation-build-tools/-/raw/main/gsi-port-ci.yml
 
 variables:
-  ADAPTATION_TOOLS_BRANCH: halium-12
-  DEV_TARBALL_VARIANT: _usrmerge
   ROOTFS_URL: "https://ci.ubports.com/job/focal-hybris-rootfs-arm64/job/master/lastSuccessfulBuild/artifact/ubuntu-touch-android9plus-rootfs-arm64.tar.gz"
   OTA_CHANNEL: "20.04/arm64/android9plus/stable"
 
@@ -18,10 +16,6 @@ flashable:
    - when: never
 
 devel-flashable:
-  rules:
-   - when: never
-
-devel-flashable-focal:
   rules:
    - when: never
 

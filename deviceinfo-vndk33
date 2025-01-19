@@ -1,0 +1,7 @@
+deviceinfo_name="Generic Device"
+deviceinfo_manufacturer="Halium"
+deviceinfo_codename="halium_gsi"
+deviceinfo_arch="aarch64"
+deviceinfo_rootfs_image_sector_size="4096"
+deviceinfo_system_partition_size="3500M"
+deviceinfo_halium_version="12"

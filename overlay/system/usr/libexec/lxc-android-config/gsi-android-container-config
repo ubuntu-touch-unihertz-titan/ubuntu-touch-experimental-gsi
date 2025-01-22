@@ -12,12 +12,10 @@ for ns in ipc pid uts; do
 done
 
 if [ "$lxc_namespace_keep" != "net user" ]; then
-    # Make /var/lib/lxc/android/config writable
     tmp_file=$(mktemp)
-    cat /var/lib/lxc/android/config > $tmp_file
+    # Update lxc.namespace.keep in config file
+    sed "s/lxc.namespace.keep = .*/lxc.namespace.keep = $lxc_namespace_keep/" /var/lib/lxc/android/config > "$tmp_file"
+
     mount -o bind "$tmp_file" /var/lib/lxc/android/config
     rm -f "$tmp_file"
-
-    # Update lxc.namespace.keep in config file
-    sed -i "s/lxc.namespace.keep = .*/lxc.namespace.keep = $lxc_namespace_keep/" /var/lib/lxc/android/config
 fi

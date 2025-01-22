@@ -76,6 +76,19 @@ while IFS= read -r path ; do
     fi
 done <<< "$BUILDPROP_PATHS"
 
+# Create mountpoints for first-stage Android ramdisk
+for path in data metadata; do
+    mkdir -p "${TMP}/system/android/${path}"
+done
+# Must not begin with / but be relative instead
+ln -sf android/data "${TMP}/system/data"
+ln -sf android/metadata "${TMP}/system/metadata"
+
+# Can't be symlinks to /android/$path due to fs_mgr_create_canonical_mount_point
+for path in product odm system_dlkm vendor vendor_dlkm; do
+    mkdir -p "${TMP}/system/${path}"
+done
+
 # Create empty boot.img to workaround build-tarball-mainline.sh check
 touch "${TMP}/partitions/boot.img"
 

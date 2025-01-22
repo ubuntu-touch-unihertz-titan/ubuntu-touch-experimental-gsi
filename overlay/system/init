@@ -1,0 +1,256 @@
+#!/bin/sh
+
+# Copyright (C) 2020 UBports Foundation
+#
+# jumpercable is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# jumpercable is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with jumpercable.  If not, see <http://www.gnu.org/licenses/>.
+
+# shellcheck source=usr/lib/lxc-android-config/common.sh
+. /usr/lib/lxc-android-config/common.sh
+
+sync_dirs() {
+        base=$1
+        source=$2
+        target=$3
+
+        OLD_PWD=$PWD
+        cd $base
+
+        for file in $source/*; do
+                # Skip empty directories
+                [ ! -e "$base/$file" -a ! -L "$base/$file" ] && continue
+
+                # If the target already exists as a file or link, there's nothing we can do
+                [ -e "$target/$file" -o -L "$target/$file" ] && [ ! -d "$target/$file" ] && continue
+
+                # If the target doesn't exist, just copy it over
+                if [ ! -e "$target/$file" -a ! -L "$target/$file" ]; then
+                        cp -Ra "$base/$file" "$target/$file"
+                        continue
+                fi
+
+                # That leaves us with directories and a recursive call
+                [ -d $file ] && sync_dirs $base $file $target
+        done
+
+        cd $OLD_PWD
+}
+
+process_bind_mounts() {
+        # Goes over /etc/system-image/writable-paths to create the correct fstab for
+        # the bind-mounts. Writes them into /run/image.fstab which is
+        # bind-mounted to /etc/fstab
+
+        if [ ! -e /etc/system-image/writable-paths ]; then
+                echo "This rootfs does not have any writable-paths defined"
+                return 0
+        fi
+
+        # Prepare the fstab
+        FSTAB=/etc/fstab
+        touch /run/image.fstab
+        mount -o bind /run/image.fstab $FSTAB ||halium_panic "Could not bind-mount fstab"
+        echo "/dev/root / rootfs defaults,ro 0 0" >>$FSTAB
+
+        echo "Adding bind-mounts to $FSTAB"
+        # Process the list of bind-mounts
+        # (but don't mount them, mountall will do it)
+        cat /etc/system-image/writable-paths | while read line; do
+                set -- $line
+                # Skip invalid/commented entries
+                ([ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ] || [ -z "$5" ]) && continue
+                [ "$1" = "#" ] && continue
+
+                # Skip invalid mount points
+                dstpath="/$1"
+                [ ! -e "$dstpath" ] && continue
+
+                if [ "$3" = "temporary" ]; then
+                        # Temporary entries are simple, just mount a tmpfs
+                        echo "tmpfs $1 tmpfs $5 0 0" >>$FSTAB
+                elif [ "$3" = "persistent" ] || [ "$3" = "synced" ]; then
+                        # Figure out the source path
+                        if [ "$2" = "auto" ]; then
+                                srcpath="/userdata/system-data/$1"
+                                path="/userdata/system-data/$1"
+                        else
+                                srcpath="/userdata/$2"
+                                path="/userdata/$2"
+                        fi
+
+                        if [ ! -e "$srcpath" ]; then
+                                # Process new persistent or synced paths
+                                dstown=$(stat -c "%u:%g" $dstpath)
+                                dstmode=$(stat -c "%a" $dstpath)
+                                mkdir -p ${srcpath%/*}
+                                if [ ! -d "$dstpath" ]; then
+                                        # Deal with redirected files
+                                        if [ "$4" = "transition" ]; then
+                                                cp -a $dstpath $srcpath
+                                        else
+                                                touch $srcpath
+                                                chown $dstown $srcpath
+                                                chmod $dstmode $srcpath
+                                        fi
+                                else
+                                        # Deal with redirected directories
+                                        if [ "$4" = "transition" ] || [ "$3" = "synced" ]; then
+                                                cp -aR $dstpath $srcpath
+                                        else
+                                                mkdir $srcpath
+                                                chown $dstown $srcpath
+                                                chmod $dstmode $srcpath
+                                        fi
+                                fi
+                        elif [ "$3" = "synced" ]; then
+                                # Process existing synced paths
+                                sync_dirs $dstpath . $srcpath
+                        fi
+
+                        if [ "$5" = "none" ]; then
+                                mount_opts="bind"
+                        else
+                                mount_opts="bind,$5"
+                        fi
+
+                        # mount all /etc dirs right now, not later when fstab is
+                        # processed, as it will cause races (e.g. /etc/machine-id).
+                        case "$1" in
+                                /etc/*)
+                                        mount -o "$mount_opts" "$srcpath" "$dstpath"
+                                        ;;
+                                *)
+                                        echo "$path $1 none $mount_opts 0 0" >>$FSTAB
+                                        ;;
+                        esac
+                else
+                        continue
+                fi
+        done
+}
+
+mount_userdata() {
+        partlist="userdata_gsi userdata UDA DATAFS USERDATA"
+
+        # find the right partition
+        for partname in $partlist; do
+                path=$(find_partition_path "$partname")
+                if [ -n "$path" ]; then break; fi
+        done
+
+        # override with a possible cmdline parameter
+        if grep -q datapart= /proc/cmdline; then
+                for x in $(cat /proc/cmdline); do
+                        case ${x} in
+                        datapart=*)
+                                path=${x#*=}
+                                ;;
+                        esac
+                done
+        fi
+
+        if [ -z "$path" ]; then
+                echo "Couldn't find data partition, mounting tmpfs as fallback."
+                mount -t tmpfs tmpfs /userdata
+                return 1
+        fi
+
+        echo "checking filesystem integrity for the userdata partition"
+        fsck_start=$(date +%s)
+
+        data_fstype=$(blkid $path -o value -s TYPE)
+        case "$data_fstype" in
+                ext4)
+                        # Mounting and umounting first, let the kernel handle the journal and
+                        # orphaned inodes (faster than e2fsck). Then, just run e2fsck forcing -y.
+                        mount -o errors=remount-ro $path /userdata
+                        umount /userdata
+                        e2fsck -y $path >/run/e2fsck.out 2>&1
+                        ;;
+                f2fs)
+                        fsck.f2fs -a $path
+                        ;;
+                *)
+                        echo "unsupported filesystem, skipping check"
+                        ;;
+        esac
+
+        if [ -z "$data_fstype" ]; then
+                if cmp -n 4096 /dev/zero $path; then
+                        echo "userdata partition is empty, formatting to ext4"
+                        data_fstype=ext4
+                        mkfs.ext4 $path
+                fi
+        fi
+
+        fsck_end=$(date +%s)
+        echo "checking filesystem for userdata took $((fsck_end - fsck_start)) seconds"
+
+        case "$data_fstype" in
+                f2fs)
+                        # This reserves 128MB of space (32768 * 4KB = 131072KB / 1024 = 128MB)
+                        # for privileged users in case the system runs out of space and needs
+                        # to be recovered.
+                        # See: https://www.kernel.org/doc/Documentation/filesystems/f2fs.txt
+                        OPTIONS="reserve_root=32768,"
+                        ;;
+                ext4)
+                        # FIXME: data=journal used on ext4 as a workaround for bug 1387214
+                        OPTIONS="data=journal,"
+                        ;;
+                *)
+                        # filesystem is not handled by us, do not add additional mount options
+                        ;;
+        esac
+
+        # Mount the data partition to a temporary mount point
+        # If the mount fails, fallback to tmpfs
+        mount -o discard,$OPTIONS $path /userdata || mount -t tmpfs tmpfs /userdata
+}
+
+# Make sure to set up everything only on first-stage boot.
+if [ ! -e /proc/self/exe ] || /usr/bin/mountpoint /mnt > /dev/null; then
+        export PATH=/bin:/usr/bin:/sbin:/usr/sbin
+
+        mount -t sysfs none /sys
+        mount -t proc none /proc
+
+        # Set up /dev, devtmpfs may be not enabled in the kernel
+        if ! mount -t devtmpfs devtmpfs /dev; then
+            mountpoint /dev > /dev/null || mount -t tmpfs tmpfs /dev
+            busybox mdev -s
+        fi
+
+        # Put all of this script's output into /dev/kmsg
+        exec 1>/dev/kmsg 2>&1
+
+        echo "<< Ubuntu Touch first stage init >>"
+
+        mkdir -p /dev/pts
+        mount -t devpts -o noexec,nosuid,gid=5,mode=0620 devpts /dev/pts
+        # Mount a tmpfs in /run of rootfs to put the future image.fstab
+        mount -o rw,nosuid,noexec,relatime,mode=755 -t tmpfs tmpfs /run
+
+        # Distinguish between halium-boot & jumpercable boot process
+        touch /dev/.halium_jumpercable
+        chmod 000 /dev/.halium_jumpercable
+
+        # Create device nodes for device-mapper loaded devices
+        dmsetup mknodes
+
+        mount_userdata
+        process_bind_mounts
+fi
+
+# Execute actual init now
+exec /sbin/init $@

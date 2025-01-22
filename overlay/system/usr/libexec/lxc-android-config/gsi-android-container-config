@@ -1,0 +1,23 @@
+#!/bin/sh -euf
+
+# Adjust the Android container configuration for the case the system is
+# running on unmodified device kernel without usual namespaces support.
+
+lxc_namespace_keep="net user"
+
+for ns in ipc pid uts; do
+    if [ ! -e /proc/1/ns/$ns ]; then
+        lxc_namespace_keep="$lxc_namespace_keep $ns"
+    fi
+done
+
+if [ "$lxc_namespace_keep" != "net user" ]; then
+    # Make /var/lib/lxc/android/config writable
+    tmp_file=$(mktemp)
+    cat /var/lib/lxc/android/config > $tmp_file
+    mount -o bind "$tmp_file" /var/lib/lxc/android/config
+    rm -f "$tmp_file"
+
+    # Update lxc.namespace.keep in config file
+    sed -i "s/lxc.namespace.keep = .*/lxc.namespace.keep = $lxc_namespace_keep/" /var/lib/lxc/android/config
+fi
